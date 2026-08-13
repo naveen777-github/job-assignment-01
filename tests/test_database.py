@@ -81,6 +81,77 @@ def test_repeated_event_from_same_boot_is_a_duplicate() -> None:
         store.close()
 
 
+def test_a_delayed_event_does_not_move_current_state_backward() -> None:
+    # sequence=2 arrives first, then a late sequence=1 shows up. Even though
+    # the late event carries a later deviceTime, it must not overwrite the
+    # newer (by sequence) current state.
+    store = TelemetryStore(":memory:")
+    try:
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-a"))
+        store.ingest(
+            telemetry(sequence=2, deviceTime="2026-08-12T09:00:02+00:00"),
+            "2026-08-12T09:00:02+00:00",
+        )
+
+        delayed = store.ingest(
+            telemetry(sequence=1, deviceTime="2026-08-12T09:00:05+00:00"),
+            "2026-08-12T09:00:06+00:00",
+        )
+
+        assert delayed.duplicate is False
+        assert delayed.current_changed is False
+        assert store.list_current_states()[0].to_api()["sequence"] == 2
+    finally:
+        store.close()
+
+
+def test_a_wrong_device_clock_does_not_block_a_later_valid_reading() -> None:
+    # boot-a's clock reports a device_time far in the past, but its sequence
+    # is legitimately newer. Current state must still advance.
+    store = TelemetryStore(":memory:")
+    try:
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-a"))
+        store.ingest(
+            telemetry(sequence=1, deviceTime="2026-08-12T09:00:00+00:00"),
+            "2026-08-12T09:00:00+00:00",
+        )
+
+        skewed = store.ingest(
+            telemetry(sequence=2, deviceTime="2000-01-01T00:00:00+00:00"),
+            "2026-08-12T09:00:01+00:00",
+        )
+
+        assert skewed.current_changed is True
+        assert store.list_current_states()[0].to_api()["sequence"] == 2
+    finally:
+        store.close()
+
+
+def test_a_newer_boot_generation_wins_even_with_a_lower_sequence() -> None:
+    # boot-b (a fresh restart, higher generation) starts back at sequence=1.
+    # It must supersede boot-a's higher sequence numbers.
+    store = TelemetryStore(":memory:")
+    try:
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-a"))
+        store.ingest(
+            telemetry(bootId="boot-a", sequence=9, deviceTime="2026-08-12T09:00:09+00:00"),
+            "2026-08-12T09:00:09+00:00",
+        )
+
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-b"))
+        restarted = store.ingest(
+            telemetry(bootId="boot-b", sequence=1, deviceTime="2026-08-12T09:01:00+00:00"),
+            "2026-08-12T09:01:00+00:00",
+        )
+
+        assert restarted.current_changed is True
+        state = store.list_current_states()[0].to_api()
+        assert state["bootId"] == "boot-b"
+        assert state["sequence"] == 1
+    finally:
+        store.close()
+
+
 def test_same_sequence_from_a_new_boot_is_not_mistaken_for_a_duplicate() -> None:
     # Event identity is (deviceId, bootId, sequence). Sequence restarts at 1
     # on every boot, so boot-b's sequence=1 must not collide with boot-a's.
