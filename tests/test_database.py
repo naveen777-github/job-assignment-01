@@ -79,3 +79,25 @@ def test_repeated_event_from_same_boot_is_a_duplicate() -> None:
         assert len(store.list_events(10)) == 1
     finally:
         store.close()
+
+
+def test_same_sequence_from_a_new_boot_is_not_mistaken_for_a_duplicate() -> None:
+    # Event identity is (deviceId, bootId, sequence). Sequence restarts at 1
+    # on every boot, so boot-b's sequence=1 must not collide with boot-a's.
+    store = TelemetryStore(":memory:")
+    try:
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-a"))
+        first = store.ingest(telemetry(bootId="boot-a"), "2026-08-12T09:00:01+00:00")
+
+        store.register_boot(BootRegistrationInput(deviceId="device-01", bootId="boot-b"))
+        second = store.ingest(
+            telemetry(bootId="boot-b", deviceTime="2026-08-12T09:05:00+00:00"),
+            "2026-08-12T09:05:00+00:00",
+        )
+
+        assert first.duplicate is False
+        assert second.duplicate is False
+        assert second.current_changed is True
+        assert len(store.list_events(10)) == 2
+    finally:
+        store.close()
