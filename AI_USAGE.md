@@ -1,19 +1,33 @@
 # AI usage record
 
-Complete this file even when no AI tool was used.
-
 ## Tools used
 
-- 
+- **Claude Code** (Claude Sonnet 5), used as the sole AI coding tool for this assignment: reading `docs/protocol.md`, `docs/runtime-contract.md`, and `docs/api.md`; reading the actual implementation to locate each of the six required behaviors; root-causing each bug against the documented contract; implementing fixes; writing tests; and running live verification (unit tests, a real server + chaos simulator run, a real WebSocket smoke test).
+- GitHub CLI (`gh`) was used by the assistant, at my direction, to fork the repo and open/merge pull requests — not an AI code-generation tool itself, but part of the AI-directed workflow, noted here for completeness.
 
 ## Important prompts or prompt summaries
 
-- 
+- Initial prompt: pasted the job assignment / recruiter message and asked for a guide on how to build the project. The assistant read `TASK.md` and all three `docs/` files directly from the starter repo (not from memory) before giving a plan, and identified all six required bugs from the actual code before any implementation started, mapping each to a specific file and line.
+- Second prompt: `"yes"` — authorized forking the repo, cloning it locally, and implementing the fixes end-to-end, one pull request per problem area, merging each after it was verified.
+- For each of the five fixes, the operating instruction (from me, directing the tool) was consistently: *read the relevant contract in `docs/`, find the exact code path responsible, identify the precise deviation from the documented behavior, make the smallest correct change, add a test that would fail before the fix and pass after it, and verify against the real running application where practical rather than trusting the unit tests alone.*
+- Asked the tool to resolve a conflict between the assignment's literal instructions ("fork this repository," "detach your fork... before you create pull requests") and what GitHub actually supports. The tool used web search and confirmed fork detachment ("Leave fork network") is a manual, one-click, browser-only action with no REST/`gh` API equivalent, and reported this rather than silently skipping the step or trying to fake it — I performed that one click myself and confirmed back to the tool, which then verified via `gh api` that the repository's `fork` flag was actually `false` before merging anything.
 
 ## Generated output rejected or corrected
 
-- 
+- The first version of `test_same_sequence_from_a_new_boot_is_not_mistaken_for_a_duplicate` (PR #1, event identity) failed on its first run — both events in the test used the same default `deviceTime`, so the *ordering* bug (not yet fixed at that point — it was fixed in the next PR) caused `current_changed` to be `False` for a reason unrelated to what the test was meant to check. Corrected by giving the second event an explicit, later `deviceTime`, so the test isolates identity behavior specifically and doesn't depend on a fix that hadn't landed yet.
+- For the `telemetry_events` rebuild migration (PR #1), an initial approach considered preserving original `id` values via explicit `INSERT ... (id, ...)`. This was rejected: SQLite's `AUTOINCREMENT` bookkeeping (`sqlite_sequence`) is tied to the table by name and isn't guaranteed to stay correctly synced across a rename/rebuild when ids are inserted explicitly, risking a primary-key collision on the first insert after migration. Replaced with a plain `INSERT ... SELECT` (no `id` column) ordered by the old `id`, letting SQLite regenerate clean, correctly tracked ids — simpler and provably correct, at the accepted cost of not preserving the exact old surrogate key values (documented in `DECISIONS.md`).
+- Did not accept "the code looks right" as sufficient for the ordering fix (PR #2) or the publish-boundary fix (PR #3). For the ordering fix specifically, re-ran the two new regression tests against the pre-fix source (via `git stash push -- telemetry_gateway/database.py`, keeping the new tests unstashed) to confirm they failed red before the fix and passed green after — this caught that the test design was sound and the fix was actually necessary, not just cosmetically different code that happened to also pass.
 
 ## Verification performed
 
-- 
+- Ran the full test suite (`pytest -q`) and `python -m compileall` after every individual change, not only at the end — test count grew from the 7-test baseline to 17 across the five fixes, all green at every step.
+- For fixes #1 and #2, explicitly confirmed the new tests fail against the pre-fix code (stashing only the source file, keeping the new test, re-running) rather than assuming a passing test after the fix proves the fix mattered.
+- For fix #4 (WebSocket backpressure), unit tests use fake `WebSocket` doubles (an `asyncio.Event` simulates a client whose `send_json` never returns) to test isolation and bounded-queue drop behavior deterministically. Separately ran a smoke test against a **real** `fastapi.testclient` WebSocket connection (not a fake) to confirm actual end-to-end message delivery still round-trips correctly after the rewrite from a shared broadcast loop to per-client queues.
+- For fix #5 (dashboard reconnect), no JS test harness exists in this repo (confirmed by searching for `package.json` / `*.test.js` — none found), so introducing one was judged out of scope for a single reconnect-trigger change. Verified the modified `app.js` with `node --check` (syntax only, no runtime harness), by direct code review, and via the live run described below. Added an API-level Python test (`test_snapshot_reflects_state_changed_while_no_websocket_was_connected`) that proves the server-side half of the contract a correct reconnect depends on.
+- End-to-end live verification after all five fixes were merged: started the real server (`python -m telemetry_gateway`) against a fresh SQLite database and ran `simulator.py --devices 4 --chaos` against it for roughly 10 seconds. Confirmed directly in the server log and API responses:
+  - Zero exceptions or error-level log lines across the whole run.
+  - Correct `"duplicate": true, "currentChanged": false` for repeated events.
+  - A genuinely delayed event from an *older* boot generation correctly reported `"currentChanged": false` (did not move state backward) — observed live, not just in a unit test.
+  - Simulated device restarts correctly received a higher `generation` and correctly became current state even though their `sequence` reset to 1.
+  - The final `/api/devices` snapshot was consistent with the highest `(generation, sequence)` actually received per device across the whole chaotic run.
+- Did **not** verify the dashboard in an actual browser — no GUI is available in this environment. This is stated explicitly rather than implied as covered; see the "Remaining risks" section of `DECISIONS.md`.
