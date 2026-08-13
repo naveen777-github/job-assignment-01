@@ -6,6 +6,7 @@ const errorBox = document.querySelector('#error');
 let stopped = false;
 let retryTimer;
 let socket;
+let hasConnectedBefore = false;
 
 function stateKey(state) {
   return `${state.deviceId}:${state.metric}`;
@@ -76,6 +77,15 @@ function connect() {
     status.textContent = 'Realtime connected';
     status.className = 'status online';
     setError('');
+
+    // WebSocket messages are not guaranteed to be replayed, so anything
+    // that changed while disconnected would otherwise be missed. Refetch
+    // the authoritative snapshot on every reconnection (the very first
+    // connect is already covered by the initial loadSnapshot() call below).
+    if (hasConnectedBefore) {
+      loadSnapshot().catch((error) => setError(error.message));
+    }
+    hasConnectedBefore = true;
   });
 
   socket.addEventListener('message', (event) => {
