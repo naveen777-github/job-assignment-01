@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from telemetry_gateway.database import TelemetryRepository, TelemetryStore
 from telemetry_gateway.errors import UnknownBootError
 from telemetry_gateway.models import BootRegistrationInput, TelemetryInput
-from telemetry_gateway.realtime import RealtimeHub
+from telemetry_gateway.realtime import DEFAULT_CLIENT_QUEUE_LIMIT, RealtimeHub
 from telemetry_gateway.service import TelemetryService
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -22,9 +22,10 @@ def create_app(
     database_path: str = "data/telemetry.db",
     repository: TelemetryRepository | None = None,
     now: Callable[[], datetime] | None = None,
+    websocket_client_queue_limit: int = DEFAULT_CLIENT_QUEUE_LIMIT,
 ) -> FastAPI:
     store = repository or TelemetryStore(database_path)
-    hub = RealtimeHub()
+    hub = RealtimeHub(queue_limit=websocket_client_queue_limit)
     service = TelemetryService(store, hub, now=now)
 
     @asynccontextmanager
