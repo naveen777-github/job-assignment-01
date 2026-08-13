@@ -34,6 +34,50 @@ def test_rejects_telemetry_for_an_unknown_boot(tmp_path) -> None:
         assert response.json() == {"error": "unknown_boot"}
 
 
+def test_snapshot_reflects_state_changed_while_no_websocket_was_connected(
+    tmp_path,
+) -> None:
+    # WebSocket messages are a low-latency notification channel, not the
+    # source of truth, and are not guaranteed to be replayed (docs/runtime-contract.md).
+    # A dashboard that reconnects must recover authoritative state via the
+    # snapshot endpoint, so it must reflect changes that happened while no
+    # client was connected to receive the realtime message.
+    app = create_app(str(tmp_path / "gateway.db"))
+    with TestClient(app) as client:
+        client.post("/api/boots", json={"deviceId": "device-01", "bootId": "boot-a"})
+
+        with client.websocket_connect("/ws") as ws:
+            client.post(
+                "/api/telemetry",
+                json={
+                    "deviceId": "device-01",
+                    "bootId": "boot-a",
+                    "sequence": 1,
+                    "deviceTime": "2026-08-12T09:00:00Z",
+                    "metric": "temperature",
+                    "value": 21.4,
+                },
+            )
+            ws.receive_json()
+        # The websocket is now closed -- no client is connected.
+
+        client.post(
+            "/api/telemetry",
+            json={
+                "deviceId": "device-01",
+                "bootId": "boot-a",
+                "sequence": 2,
+                "deviceTime": "2026-08-12T09:01:00Z",
+                "metric": "temperature",
+                "value": 23.9,
+            },
+        )
+
+        devices = client.get("/api/devices")
+        assert devices.json()["devices"][0]["value"] == 23.9
+        assert devices.json()["devices"][0]["sequence"] == 2
+
+
 def test_registers_boot_ingests_and_lists_state(tmp_path) -> None:
     app = create_app(
         str(tmp_path / "gateway.db"),
