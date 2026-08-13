@@ -12,3 +12,4 @@ data/*.db-*
 .env
 .DS_Store
 *.log
+.claude/
