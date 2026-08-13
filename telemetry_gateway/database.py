@@ -145,7 +145,9 @@ class TelemetryStore:
                         device_time = excluded.device_time,
                         received_at = excluded.received_at,
                         value = excluded.value
-                    WHERE excluded.device_time > current_state.device_time
+                    WHERE excluded.generation > current_state.generation
+                       OR (excluded.generation = current_state.generation
+                           AND excluded.sequence > current_state.sequence)
                     """,
                     (
                         event.deviceId,
